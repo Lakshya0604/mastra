@@ -1513,4 +1513,5 @@ function getFGAResourcePermissionSlug(resourceType: string): string {
     thread: 'memory',
   };
 
-  return resourcePermissionSlugs[resourceType] ?? resourc
+  return resourcePermissionSlugs[resourceType] ?? resourceType;
+}
