@@ -210,6 +210,109 @@ function convertToJsonSchema(spec: OpenAPIRoute): any {
   return converted;
 }
 
+
+const DEF_BLOCKS = ['$defs', 'definitions'] as const;
+
+/**
+ * Hoists nested `$defs` / `definitions` blocks into the document's
+ * `components.schemas` and rewrites the refs that pointed at them.
+ *
+ * Each route schema is converted to JSON Schema on its own, so reusable or
+ * recursive subschemas (z.lazy, .meta({ id }), shared schemas) end up in a
+ * `$defs` / `definitions` block nested inside that one schema, referenced as
+ * `#/$defs/<name>` / `#/definitions/<name>`. Once the schema is embedded in
+ * the served document those refs resolve against the document root, which has
+ * no such block - every one of them dangles.
+ */
+export function hoistSchemaDefsIntoComponents(doc: any): void {
+  if (!doc || typeof doc !== 'object') return;
+
+  const hoisted: Record<string, any> = Object.create(null);
+  const usedNames = new Set<string>(Object.keys(doc.components?.schemas ?? {}));
+
+  const componentName = (base: string): string => {
+    const safe = base.replace(/[^A-Za-z0-9._-]/g, '_') || 'Schema';
+    if (!usedNames.has(safe)) {
+      usedNames.add(safe);
+      return safe;
+    }
+    let suffix = 2;
+    while (usedNames.has(`${safe}_${suffix}`)) suffix++;
+    const name = `${safe}_${suffix}`;
+    usedNames.add(name);
+    return name;
+  };
+
+  // Rewrites refs matching `#/$defs/<name>` / `#/definitions/<name>` using the
+  // name map of one hoisted block. Subtrees carrying their own defs block are
+  // skipped: their refs belong to that block and are rewritten by its own
+  // pass when the walk reaches them.
+  const rewriteRefs = (node: any, nameMap: Map<string, string>): void => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      node.forEach(child => rewriteRefs(child, nameMap));
+      return;
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key === '$ref' && typeof value === 'string') {
+        const match = value.match(/^#\/(?:\$defs|definitions)\/(.+)$/);
+        if (match && nameMap.has(match[1] as string)) {
+          node[key] = `#/components/schemas/${nameMap.get(match[1] as string)}`;
+        }
+        continue;
+      }
+      if ((DEF_BLOCKS as readonly string[]).includes(key)) continue;
+      if (
+        value &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        DEF_BLOCKS.some(block => typeof (value as Record<string, any>)[block] === 'object')
+      ) {
+        continue;
+      }
+      rewriteRefs(value, nameMap);
+    }
+  };
+
+  const walk = (node: any): void => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+    for (const block of DEF_BLOCKS) {
+      const defs = node[block];
+      if (defs && typeof defs === 'object' && !Array.isArray(defs)) {
+        const nameMap = new Map<string, string>();
+        for (const localName of Object.keys(defs)) {
+          nameMap.set(localName, componentName(localName));
+        }
+        for (const [localName, defSchema] of Object.entries(defs)) {
+          rewriteRefs(defSchema, nameMap);
+          hoisted[nameMap.get(localName) as string] = defSchema;
+        }
+        delete node[block];
+        rewriteRefs(node, nameMap);
+      }
+    }
+    for (const value of Object.values(node)) {
+      walk(value);
+    }
+  };
+
+  walk(doc.paths);
+
+  if (Object.keys(hoisted).length > 0) {
+    doc.components = {
+      ...(doc.components ?? {}),
+      schemas: {
+        ...(doc.components?.schemas ?? {}),
+        ...hoisted,
+      },
+    };
+  }
+}
+
 /**
  * Generates a complete OpenAPI 3.1.0 document from server routes
  * @param routes - Array of ServerRoute objects with OpenAPI specifications
@@ -238,7 +341,7 @@ export function generateOpenAPIDocument(
     paths[openapiPath][route.method.toLowerCase()] = convertToJsonSchema(route.openapi);
   });
 
-  return {
+  const doc: any = {
     openapi: '3.1.0',
     info: {
       title: info.title,
@@ -247,6 +350,10 @@ export function generateOpenAPIDocument(
     },
     paths,
   };
+
+  hoistSchemaDefsIntoComponents(doc);
+
+  return doc;
 }
 
 /**
