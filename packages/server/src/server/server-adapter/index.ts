@@ -26,7 +26,7 @@ import { HTTPException } from '../http-exception';
 export { isZodError, type ZodErrorLike } from '../handlers/error';
 import { normalizeRoutePath } from '../utils';
 import type { SetMcpRequestAuth } from './mcp-auth';
-import { generateOpenAPIDocument, convertCustomRoutesToOpenAPIPaths } from './openapi-utils';
+import { generateOpenAPIDocument, convertCustomRoutesToOpenAPIPaths, hoistSchemaDefsIntoComponents } from './openapi-utils';
 import type { ServerRoute } from './routes';
 import { SERVER_ROUTES, getEffectivePermission } from './routes';
 import { getBuiltInRouteFGAConfig } from './routes/fga-manifest';
@@ -1301,6 +1301,10 @@ export abstract class MastraServer<TApp, TRequest, TResponse> extends MastraServ
       openApiSpec.paths = { ...openApiSpec.paths, ...customPaths };
     }
 
+    // Custom route paths are merged after generateOpenAPIDocument ran, so they
+    // still carry their nested defs blocks - hoist those too.
+    hoistSchemaDefsIntoComponents(openApiSpec);
+
     return openApiSpec;
   }
 
@@ -1510,4 +1514,4 @@ function getFGAResourcePermissionSlug(resourceType: string): string {
   };
 
   return resourcePermissionSlugs[resourceType] ?? resourceType;
-}
+        }
