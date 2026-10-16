@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { SERVER_ROUTES } from '../server-adapter/routes';
+import { generateOpenAPIDocument } from './openapi-utils';
 
 /**
  * Extract path parameters from a path pattern
@@ -245,5 +246,45 @@ describe('Schema Consistency Across All Routes', () => {
       // Common ID params should be present
       expect(idParams.size).toBeGreaterThan(0);
     });
+  });
+});
+
+describe('OpenAPI document $refs (#27153)', () => {
+  const collectRefs = (node: any, refs: string[] = []): string[] => {
+    if (!node || typeof node !== 'object') return refs;
+    if (Array.isArray(node)) {
+      node.forEach(child => collectRefs(child, refs));
+      return refs;
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key === '$ref' && typeof value === 'string') {
+        refs.push(value);
+      } else {
+        collectRefs(value, refs);
+      }
+    }
+    return refs;
+  };
+
+  it('every local $ref in the generated document resolves', () => {
+    const doc = generateOpenAPIDocument(SERVER_ROUTES, { title: 't', version: '1' });
+    const refs = collectRefs(doc);
+    expect(refs.length).toBeGreaterThan(0);
+    const dangling = refs.filter(ref => {
+      if (!ref.startsWith('#/')) return false;
+      let node: any = doc;
+      for (const part of ref.slice(2).split('/')) {
+        node = node?.[part.replace(/~1/g, '/').replace(/~0/g, '~')];
+      }
+      return node === undefined;
+    });
+    expect(dangling).toEqual([]);
+  });
+
+  it('the generated document has no nested $defs/definitions blocks left under paths', () => {
+    const doc = generateOpenAPIDocument(SERVER_ROUTES, { title: 't', version: '1' });
+    const pathsJson = JSON.stringify(doc.paths);
+    expect(pathsJson.includes('"$defs"')).toBe(false);
+    expect(pathsJson.includes('"definitions"')).toBe(false);
   });
 });
