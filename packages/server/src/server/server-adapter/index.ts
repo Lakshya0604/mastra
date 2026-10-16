@@ -1514,4 +1514,4 @@ function getFGAResourcePermissionSlug(resourceType: string): string {
   };
 
   return resourcePermissionSlugs[resourceType] ?? resourceType;
-          }
+}
